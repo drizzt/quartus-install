@@ -477,6 +477,9 @@ import tempfile
 import stat
 import urllib.request
 import platform
+import time
+import glob
+import signal
 
 def match_wanted_parts(version, devices):
     # work out what devices we have available
@@ -538,13 +541,96 @@ def install_quartus(version, installdir):
 def run_installer(installerfile, installdir):
     leafname = os.path.basename(installerfile)
     target = os.path.abspath(installdir)
+    # The Quartus BitRock installer never exits unattended: it writes
+    # nothing to stdout and, even with DISPLAY/WAYLAND_DISPLAY stripped (so
+    # no progress window can be drawn), a post-install thread waits forever
+    # after the work is done. Two logs matter:
+    #  - live progress goes to /tmp/bitrock_installer_<pid>.log, written
+    #    incrementally during the run -> tail that for real-time output;
+    #  - "Installation completed" is recorded in <installdir>/logs/
+    #    quartus-<ver>-linux-install.log, which BitRock only materialises at
+    #    the end -> use that for completion detection.
+    # The base .run also chain-spawns the bundled update with its own pair
+    # of logs. So we launch detached in its own process group, tail the
+    # bitrock logs for progress, and once every installdir log reports
+    # completion (tree fully written) reap the whole group ourselves.
     args = ["--mode", "unattended"]
     numeric_version = ''.join(i for i in version if i.isdigit() or i=='.')
     if numeric_version >= '17.1':
         args = args + ['--accept_eula', '1']
-    process = subprocess.Popen(['./'+leafname] + args + ['--installdir', target], bufsize=1)
-    rc = process.wait()
-    return rc
+    env = os.environ.copy()
+    env.pop('DISPLAY', None)
+    env.pop('WAYLAND_DISPLAY', None)
+    logglob = os.path.join(target, 'logs', 'quartus-*-linux-install.log')
+    progressglob = '/tmp/bitrock_installer_*.log'
+    start_ts = time.time()
+    offsets = {}
+
+    def matching(globpat):
+        out = []
+        for f in glob.glob(globpat):
+            try:
+                if os.path.getmtime(f) >= start_ts - 5:
+                    out.append(f)
+            except OSError:
+                pass
+        return sorted(out)
+
+    def tail(globpat):
+        # Stream newly-appended content of every matching file to our
+        # stdout so CI/console shows real installer progress instead of a
+        # silent multi-minute black box.
+        for f in matching(globpat):
+            try:
+                with open(f, 'r', errors='ignore') as fh:
+                    fh.seek(offsets.get(f, 0))
+                    chunk = fh.read()
+                    offsets[f] = fh.tell()
+            except OSError:
+                continue
+            if chunk:
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+
+    process = subprocess.Popen(
+        ['./'+leafname] + args + ['--installdir', target],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=env, start_new_session=True)
+    deadline = start_ts + 3 * 3600
+    while True:
+        rc = process.poll()
+        tail(progressglob)
+        tail(logglob)
+        if rc is not None:
+            return rc                       # exited on its own
+        logs = matching(logglob)
+        if logs and all(
+                'Installation completed' in open(f, errors='ignore').read()
+                for f in logs):
+            break
+        if time.time() > deadline:
+            sys.stderr.write("run_installer: timed out waiting for "
+                             "completion banner; reaping anyway\n")
+            break
+        time.sleep(5)
+    # Tree is fully written; kill the whole process group (base installer +
+    # chained update) since it will never return on its own.
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        process.terminate()
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            process.kill()
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            pass
+    return 0
 #            ./$QUARTUS_SCRIPT --mode unattended --unattendedmodeui minimal --installdir $QUARTUS_DIR && \
 
 def install_patch(version, installdir, patchname):
