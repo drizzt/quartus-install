@@ -295,7 +295,8 @@ quartus_url_170pro = {
     'a10_part2' : "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/arria10_part2-17.0.0.290.qdz",
     'a10_part3' : "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/arria10_part3-17.0.0.290.qdz",
     'c10gx_part1' : "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/cyclone10gx_part1-17.0.0.290.qdz",
-    'c10gx_part2' : "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/cyclone10gx_part2-17.0.0.290.qdz"
+    'c10gx_part2' : "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/cyclone10gx_part2-17.0.0.290.qdz",
+    "update_1" : "https://download.altera.com/akdlm/software/acdsinst/17.0.2/297/update/QuartusProSetup-17.0.2.297-linux.run",
 }
 
 quartus_url_170std = {
@@ -312,6 +313,7 @@ quartus_url_170std = {
     'm10' : "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/max10-17.0.0.595.qdz",
     's4' : "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/stratixiv-17.0.0.595.qdz",
     's5' : "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/stratixv-17.0.0.595.qdz",
+    "update_1" : "https://download.altera.com/akdlm/software/acdsinst/17.0std.2/602/update/QuartusSetup-17.0.2.602-linux.run",
 }
 
 quartus_url_161std = {
