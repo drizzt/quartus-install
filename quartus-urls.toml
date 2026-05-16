@@ -170,6 +170,12 @@ s4 = "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_install
 s5 = "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/stratixv-17.0.0.595.qdz"
 update_1 = "https://download.altera.com/akdlm/software/acdsinst/17.0std.2/602/update/QuartusSetup-17.0.2.602-linux.run"
 
+[versions."17.0lite"]
+type = "copy"
+base = "17.0std"
+[versions."17.0lite".override]
+setup = "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/QuartusLiteSetup-17.0.0.595-linux.run"
+
 [versions."17.1pro"]
 type = "explicit"
 [versions."17.1pro".urls]
