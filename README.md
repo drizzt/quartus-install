@@ -73,6 +73,10 @@ Example usage:
 quartus-install.py 18.1std /opt/intelFPGA/18.1std a10 s4 s5 c4 c5 m10
 ```
 
+This script requires **Python 3.11 or newer** (it uses the standard
+library `tomllib` to read the URL database; no third-party packages are
+needed).
+
 You will also need the ['aria2'](https://aria2.github.io/) tool installed
 (available as a Ubuntu package) to
 perform parallel downloads (since the Akamai servers have limited per-file
@@ -86,8 +90,15 @@ you download.
 Since it's necessary to extract the URLs manually from the Altera website
 (which has no API and hides the direct CDN links behind per-file
 license-agreement redirects), the supported versions are a hand-curated
-list.  Run `--check-urls` to verify the database is still fetchable.
-Patches/PRs welcome!
+list.  That list lives in **`quartus-urls.toml`** next to the script: edit
+that file (not the Python) to add or fix a release.  Each version is one
+`[versions."..."]` table with a `type` (`pro`/`std` generate their URLs
+from just version+revision; `lite_from_std`/`copy` derive from another
+entry; `explicit` spells out the URLs for quirky old releases); the file's
+header documents the schema.  If the script is run on its own without
+`quartus-urls.toml` beside it, it fetches the file from GitHub into memory
+automatically.  Run `--check-urls` to verify the database is still
+fetchable.  Patches/PRs welcome!
 
 Theo Markettos
 

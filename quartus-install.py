@@ -49,6 +49,11 @@ import tempfile
 import time
 import urllib.request
 
+if sys.version_info < (3, 11):
+    sys.exit("quartus-install.py requires Python 3.11+")
+
+import tomllib
+
 UrlDB = dict[str, dict[str, str]]
 
 # Canonical download host.  Altera now owns the FPGA tools; this host
@@ -60,6 +65,10 @@ BASE_URL = "https://download.altera.com/akdlm/software/acdsinst"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PARALLEL = 16
+
+DATA_FILE = os.path.join(SCRIPT_DIR, "quartus-urls.toml")
+DATA_URL = ("https://raw.githubusercontent.com/drizzt/quartus-install/"
+            "master/quartus-urls.toml")
 
 # Non-device parts that are always installed alongside the requested
 # devices, keyed by the prefix before the first '_' in the part name.
@@ -210,374 +219,77 @@ def lite_from_std(std: dict[str, str]) -> dict[str, str]:
     return lite
 
 
+def load_versions_data() -> dict:
+    """Read the URL database TOML.
+
+    Prefer the copy next to the script (git clone / normal install); if the
+    script was copied out on its own, fetch it from GitHub into memory so it
+    still runs standalone.
+    """
+    try:
+        with open(DATA_FILE, "rb") as fh:
+            return tomllib.load(fh)
+    except FileNotFoundError:
+        pass  # script copied out on its own - fall back to GitHub
+    try:
+        with urllib.request.urlopen(DATA_URL, timeout=10) as resp:
+            return tomllib.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - offline, 404, bad TOML, ...
+        sys.exit(f"Cannot load URL database: {DATA_FILE} not found and "
+                 f"fetching {DATA_URL} failed: {exc}")
+
+
 def build_versions() -> UrlDB:
-    """Build the full {version: {part: url}} database."""
-    # generated from the regular pattern
-    quartus_url_234pro = generate_pro_url("23.4", "0", "79")
-    quartus_url_233pro = generate_pro_url("23.3", "0", "104")
-    quartus_url_232pro = generate_pro_url("23.2", "0", "94.2")
-    quartus_url_231pro = generate_pro_url("23.1", "0", "115")
-    quartus_url_224pro = generate_pro_url("22.4", "0", "94")
-    quartus_url_223pro = generate_pro_url("22.3", "0", "104")
-    quartus_url_222pro = generate_pro_url("22.2", "0", "94")
-    quartus_url_221pro = generate_pro_url("22.1", "0", "174")
-    quartus_url_214pro = generate_pro_url("21.4", "0", "67")
-    quartus_url_213pro = generate_pro_url("21.3", "0", "170")
-    quartus_url_212pro = generate_pro_url("21.2", "0", "72")
-    quartus_url_211pro = generate_pro_url("21.1", "0", "169")
-    quartus_url_204pro = generate_pro_url("20.4", "0", "72")
-    quartus_url_203pro = generate_pro_url("20.3", "0", "158")
-    quartus_url_202pro = generate_pro_url("20.2", "0", "50")
-    quartus_url_201pro = generate_pro_url("20.1", "0", "177")
-    quartus_url_194pro = generate_pro_url("19.4", "0", "64")
-    quartus_url_193pro = generate_pro_url("19.3", "0", "222")
-    quartus_url_192pro = generate_pro_url("19.2", "0", "57")
-    quartus_url_251pro = generate_pro_url("25.1", "0", "129")
-    quartus_url_243pro = generate_pro_url("24.3", "0", "212")
-    quartus_url_242pro = generate_pro_url("24.2", "0", "40")
-    quartus_url_241pro = generate_pro_url("24.1", "0", "115")
+    """Build the full {version: {part: url}} database from the TOML data.
 
-    quartus_url_2011std = generate_std_url("20.1", "1", "720", "std.1")
-    quartus_url_201std = generate_std_url("20.1", "0", "711", "std")
-    quartus_url_191std = generate_std_url("19.1", "0", "670", "std")
+    Generator helpers stay in code; the TOML carries only per-version
+    parameters.  References (base / copy_parts_from) are resolved
+    recursively so entries may appear in any order in the file.
+    """
+    data = load_versions_data()
+    raw = data.get("versions", {})
+    built: dict[str, dict[str, str]] = {}
+    building: set[str] = set()
 
-    # some files weren't updated in this patch release
-    for part in ("a5", "a10_part1", "a10_part2", "a10_part3", "a5gz"):
-        quartus_url_2011std[part] = quartus_url_201std[part]
-    quartus_url_2011std["setup"] = (
-        "https://download.altera.com/akdlm/software/acdsinst/20.1std.1/720/"
-        "ib_installers/QuartusSetup-20.1.1.720-linux.run"
-    )
+    def resolve(key: str) -> dict[str, str]:
+        if key in built:
+            return built[key]
+        if key not in raw:
+            sys.exit(f"URL database: unknown version '{key}'")
+        if key in building:
+            sys.exit(f"URL database: circular reference at '{key}'")
+        building.add(key)
+        entry = raw[key]
+        kind = entry.get("type")
+        if kind == "pro":
+            urls = generate_pro_url(entry["quartus_version"],
+                                    entry["minor"], entry["revision"])
+        elif kind == "std":
+            urls = generate_std_url(
+                entry["quartus_version"], entry["minor"],
+                entry["revision"], entry["edition"],
+                sim=entry.get("sim", "modelsim"),
+                embed_edition=entry.get("embed_edition", False),
+                arria10_single=entry.get("arria10_single", False))
+            src = entry.get("copy_parts_from")
+            if src:
+                base = resolve(src)
+                for part in entry.get("copy_parts", []):
+                    urls[part] = base[part]
+        elif kind == "lite_from_std":
+            urls = lite_from_std(resolve(entry["base"]))
+        elif kind == "copy":
+            urls = dict(resolve(entry["base"]))
+        elif kind == "explicit":
+            urls = dict(entry["urls"])
+        else:
+            sys.exit(f"URL database: unknown type '{kind}' for '{key}'")
+        urls.update(entry.get("override", {}))
+        building.discard(key)
+        built[key] = urls
+        return urls
 
-    # Modern Standard/Lite releases.  21.1 still uses the old (no edition in
-    # filename) layout with arria10_part1/2/3; 22.1 bakes the edition into
-    # the filename; from 23.1 Arria 10 is a single qdz.  All use Questa.
-    quartus_url_211std = generate_std_url("21.1", "0", "842", "std",
-                                          sim="questa")
-    quartus_url_221std = generate_std_url("22.1", "0", "915", "std",
-                                          sim="questa", embed_edition=True)
-    quartus_url_231std = generate_std_url("23.1", "0", "991", "std",
-                                          sim="questa", embed_edition=True,
-                                          arria10_single=True)
-    quartus_url_241std = generate_std_url("24.1", "0", "1077", "std",
-                                          sim="questa", embed_edition=True,
-                                          arria10_single=True)
-    quartus_url_251std = generate_std_url("25.1", "0", "1129", "std",
-                                          sim="questa", embed_edition=True,
-                                          arria10_single=True)
-    quartus_url_211lite = lite_from_std(quartus_url_211std)
-    quartus_url_221lite = lite_from_std(quartus_url_221std)
-    quartus_url_231lite = lite_from_std(quartus_url_231std)
-    quartus_url_241lite = lite_from_std(quartus_url_241std)
-    quartus_url_251lite = lite_from_std(quartus_url_251std)
-
-    # Lite has a different installer but the same device files
-    quartus_url_2011lite = dict(quartus_url_2011std)
-    quartus_url_2011lite["setup"] = "https://download.altera.com/akdlm/software/acdsinst/20.1std.1/720/ib_installers/QuartusLiteSetup-20.1.1.720-linux.run"
-    quartus_url_201lite = dict(quartus_url_201std)
-    quartus_url_201lite["setup"] = "https://download.altera.com/akdlm/software/acdsinst/20.1std/711/ib_installers/QuartusLiteSetup-20.1.0.711-linux.run"
-    quartus_url_191lite = dict(quartus_url_191std)
-    quartus_url_191lite["setup"] = "https://download.altera.com/akdlm/software/acdsinst/19.1std/670/ib_installers/QuartusLiteSetup-19.1.0.670-linux.run"
-
-    # older versions, where each has sufficient quirks not to fit the pattern
-    quartus_url_191pro = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/19.1/240/ib_installers/QuartusProSetup-19.1.0.240-linux.run",
-        "modelsim_part1": "https://download.altera.com/akdlm/software/acdsinst/19.1/240/ib_installers/ModelSimProSetup-19.1.0.240-linux.run",
-        "modelsim_part2": "https://download.altera.com/akdlm/software/acdsinst/19.1/240/ib_installers/modelsim-part2-19.1.0.240-linux.qdz",
-        "a10": "https://download.altera.com/akdlm/software/acdsinst/19.1/240/ib_installers/arria10-19.1.0.240.qdz",
-        "c10gx": "https://download.altera.com/akdlm/software/acdsinst/19.1/240/ib_installers/cyclone10gx-19.1.0.240.qdz",
-        "s10": "https://download.altera.com/akdlm/software/acdsinst/19.1/240/ib_installers/stratix10-19.1.0.240.qdz",
-    }
-
-    quartus_url_181pro = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/QuartusProSetup-18.1.0.222-linux.run",
-        "modelsim_part1": "https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/ModelSimProSetup-18.1.0.222-linux.run",
-        "modelsim_part2": "https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/modelsim-part2-18.1.0.222-linux.qdz",
-        "a10": "https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/arria10-18.1.0.222.qdz",
-        "c10gx": "https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/cyclone10gx-18.1.0.222.qdz",
-        "s10": "https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/stratix10-18.1.0.222.qdz",
-        "update_1": "https://download.altera.com/akdlm/software/acdsinst/18.1.1/263/update/QuartusProSetup-18.1.1.263-linux.run",
-    }
-
-    quartus_url_181std = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/QuartusSetup-18.1.0.625-linux.run",
-        "modelsim": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/ModelSimSetup-18.1.0.625-linux.run",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/cyclone-18.1.0.625.qdz",
-        "a5gz": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/arriavgz-18.1.0.625.qdz",
-        "a5": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/arriav-18.1.0.625.qdz",
-        "a10_part1": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/arria10_part1-18.1.0.625.qdz",
-        "a10_part2": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/arria10_part2-18.1.0.625.qdz",
-        "a10_part3": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/arria10_part3-18.1.0.625.qdz",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/arria-18.1.0.625.qdz",
-        "c10lp": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/cyclone10lp-18.1.0.625.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/cyclonev-18.1.0.625.qdz",
-        "s4": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/stratixiv-18.1.0.625.qdz",
-        "s5": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/stratixv-18.1.0.625.qdz",
-        "m10": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/max10-18.1.0.625.qdz",
-        "m2": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/max-18.1.0.625.qdz",
-        "opencl": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/AOCLSetup-18.1.0.625-linux.run",
-        "eds": "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/SoCEDSSetup-18.1.0.625-linux.run",
-        "update_1": "https://download.altera.com/akdlm/software/acdsinst/18.1std.1/646/update/QuartusSetup-18.1.1.646-linux.run",
-    }
-
-    quartus_url_181lite = dict(quartus_url_181std)
-    quartus_url_181lite["setup"] = "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/QuartusLiteSetup-18.1.0.625-linux.run"
-    quartus_url_181lite["a2"] = "https://download.altera.com/akdlm/software/acdsinst/18.1std/625/ib_installers/arria_lite-18.1.0.625.qdz"
-
-    quartus_url_171std = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/QuartusSetup-17.1.0.590-linux.run",
-        "modelsim": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/ModelSimSetup-17.1.0.590-linux.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/arria-17.1.0.590.qdz",
-        "a10_part1": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/arria10_part1-17.1.0.590.qdz",
-        "a10_part2": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/arria10_part2-17.1.0.590.qdz",
-        "a10_part3": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/arria10_part3-17.1.0.590.qdz",
-        "s4": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/stratixiv-17.1.0.590.qdz",
-        "s5": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/stratixv-17.1.0.590.qdz",
-        "c10lp": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/arriav-17.1.0.590.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/cyclonev-17.1.0.590.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/cyclone-17.1.0.590.qdz",
-        "a5": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/arriav-17.1.0.590.qdz",
-        "a5gz": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/arriavgz-17.1.0.590.qdz",
-        "m5": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/max-17.1.0.590.qdz",
-        "m10": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/max10-17.1.0.590.qdz",
-        "update_1": "https://download.altera.com/akdlm/software/acdsinst/17.1std.1/593/update/QuartusSetup-17.1.1.593-linux.run",
-        "dsp": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/DSPBuilderSetup-17.1.0.590-linux.run",
-        "opencl": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/AOCLSetup-17.1.0.590-linux.run",
-        "eds": "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/SoCEDSSetup-17.1.0.590-linux.run",
-    }
-
-    quartus_url_171pro = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/17.1/240/ib_installers/QuartusProSetup-17.1.0.240-linux.run",
-        "modelsim": "https://download.altera.com/akdlm/software/acdsinst/17.1/240/ib_installers/QuartusProSetup-17.1.0.240-linux.run",
-        "a10_part1": "https://download.altera.com/akdlm/software/acdsinst/17.1/240/ib_installers/arria10_part1-17.1.0.240.qdz",
-        "a10_part2": "https://download.altera.com/akdlm/software/acdsinst/17.1/240/ib_installers/arria10_part2-17.1.0.240.qdz",
-        "a10_part3": "https://download.altera.com/akdlm/software/acdsinst/17.1/240/ib_installers/arria10_part3-17.1.0.240.qdz",
-        "c10gx_part1": "https://download.altera.com/akdlm/software/acdsinst/17.1/240/ib_installers/cyclone10gx_part1-17.1.0.240.qdz",
-        "c10gx_part2": "https://download.altera.com/akdlm/software/acdsinst/17.1/240/ib_installers/cyclone10gx_part2-17.1.0.240.qdz",
-        "s10_part1": "https://download.altera.com/akdlm/software/acdsinst/17.1/240/ib_installers/stratix10_part1-17.1.0.240.qdz",
-        "s10_part2": "https://download.altera.com/akdlm/software/acdsinst/17.1/240/ib_installers/stratix10_part2-17.1.0.240.qdz",
-        "s10_part3": "https://download.altera.com/akdlm/software/acdsinst/17.1/240/ib_installers/stratix10_part3-17.1.0.240.qdz",
-        "update_1": "https://download.altera.com/akdlm/software/acdsinst/17.1.2/304/update/QuartusProSetup-17.1.2.304-linux.run",
-    }
-
-    quartus_url_180pro = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/18.0/219/ib_installers/QuartusProSetup-18.0.0.219-linux.run",
-        "a10_part1": "https://download.altera.com/akdlm/software/acdsinst/18.0/219/ib_installers/arria10-18.0.0.219.qdz",
-        "c10gx_part1": "https://download.altera.com/akdlm/software/acdsinst/18.0/219/ib_installers/cyclone10gx-18.0.0.219.qdz",
-        "s10_part1": "https://download.altera.com/akdlm/software/acdsinst/18.0/219/ib_installers/stratix10-18.0.0.219.qdz",
-        "update_1": "https://download.altera.com/akdlm/software/acdsinst/18.0.1/261/update/QuartusProSetup-18.0.1.261-linux.run",
-    }
-
-    quartus_url_180std = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/QuartusSetup-18.0.0.614-linux.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/arria-18.0.0.614.qdz",
-        "a10_part1": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/arria10_part1-18.0.0.614.qdz",
-        "a10_part2": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/arria10_part2-18.0.0.614.qdz",
-        "a10_part3": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/arria10_part3-18.0.0.614.qdz",
-        "a5": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/arriav-18.0.0.614.qdz",
-        "a5gz": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/arriavgz-18.0.0.614.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/cyclone-18.0.0.614.qdz",
-        "c10lp": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/cyclone10lp-18.0.0.614.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/cyclonev-18.0.0.614.qdz",
-        "m5": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/max-18.0.0.614.qdz",
-        "m10": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/max10-18.0.0.614.qdz",
-        "s4": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/stratixiv-18.0.0.614.qdz",
-        "s5": "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/stratixv-18.0.0.614.qdz",
-    }
-
-    quartus_url_180lite = dict(quartus_url_180std)
-    quartus_url_180lite["setup"] = "https://download.altera.com/akdlm/software/acdsinst/18.0std/614/ib_installers/QuartusLiteSetup-18.0.0.614-linux.run"
-
-    quartus_url_170pro = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/QuartusProSetup-17.0.0.290-linux.run",
-        "a10_part1": "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/arria10_part1-17.0.0.290.qdz",
-        "a10_part2": "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/arria10_part2-17.0.0.290.qdz",
-        "a10_part3": "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/arria10_part3-17.0.0.290.qdz",
-        "c10gx_part1": "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/cyclone10gx_part1-17.0.0.290.qdz",
-        "c10gx_part2": "https://download.altera.com/akdlm/software/acdsinst/17.0/290/ib_installers/cyclone10gx_part2-17.0.0.290.qdz",
-        "update_1": "https://download.altera.com/akdlm/software/acdsinst/17.0.2/297/update/QuartusProSetup-17.0.2.297-linux.run",
-    }
-
-    quartus_url_170std = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/QuartusSetup-17.0.0.595-linux.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/arria-17.0.0.595.qdz",
-        "a10_part1": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/arria10_part1-17.0.0.595.qdz",
-        "a10_part2": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/arria10_part2-17.0.0.595.qdz",
-        "a10_part3": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/arria10_part3-17.0.0.595.qdz",
-        "a5": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/arriav-17.0.0.595.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/cyclone-17.0.0.595.qdz",
-        "c10lp": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/cyclone10lp-17.0.0.595.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/cyclonev-17.0.0.595.qdz",
-        "m5": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/max-17.0.0.595.qdz",
-        "m10": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/max10-17.0.0.595.qdz",
-        "s4": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/stratixiv-17.0.0.595.qdz",
-        "s5": "https://download.altera.com/akdlm/software/acdsinst/17.0std/595/ib_installers/stratixv-17.0.0.595.qdz",
-        "update_1": "https://download.altera.com/akdlm/software/acdsinst/17.0std.2/602/update/QuartusSetup-17.0.2.602-linux.run",
-    }
-
-    quartus_url_161std = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/QuartusSetup-16.1.0.196-linux.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/arria-16.1.0.196.qdz",
-        "a10_part1": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/arria10_part1-16.1.0.196.qdz",
-        "a10_part2": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/arria10_part2-16.1.0.196.qdz",
-        "a10_part3": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/arria10_part3-16.1.0.196.qdz",
-        "a5": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/arriav-16.1.0.196.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/cyclone-16.1.0.196.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/cyclonev-16.1.0.196.qdz",
-        "m2": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/max-16.1.0.196.qdz",
-        "m10": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/max10-16.1.0.196.qdz",
-        "s4": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/stratixiv-16.1.0.196.qdz",
-        "s5": "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/stratixv-16.1.0.196.qdz",
-        "update_1": "https://download.altera.com/akdlm/software/acdsinst/16.1.1/200/update/QuartusSetup-16.1.1.200-linux.run",
-    }
-
-    quartus_url_161lite = dict(quartus_url_161std)
-    quartus_url_161lite["setup"] = "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/QuartusLiteSetup-16.1.0.196-linux.run"
-
-    quartus_url_171lite = dict(quartus_url_171std)
-    quartus_url_171lite["setup"] = "https://download.altera.com/akdlm/software/acdsinst/17.1std/590/ib_installers/QuartusLiteSetup-17.1.0.590-linux.run"
-
-    quartus_url_160std = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/QuartusSetup-16.0.0.211-linux.run",
-        "modelsim": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/ModelSimSetup-16.0.0.211-linux.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/arria-16.0.0.211.qdz",
-        "a10_part1": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/arria10_part1-16.0.0.211.qdz",
-        "a10_part2": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/arria10_part2-16.0.0.211.qdz",
-        "a10_part3": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/arria10_part3-16.0.0.211.qdz",
-        "a5": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/arriav-16.0.0.211.qdz",
-        "a5gz": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/arriavgz-16.0.0.211.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/cyclone-16.0.0.211.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/cyclonev-16.0.0.211.qdz",
-        "m2": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/max-16.0.0.211.qdz",
-        "m10": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/max10-16.0.0.211.qdz",
-        "s4": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/stratixiv-16.0.0.211.qdz",
-        "s5": "https://download.altera.com/akdlm/software/acdsinst/16.0/211/ib_installers/stratixv-16.0.0.211.qdz",
-    }
-
-    quartus_url_151std = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/QuartusSetup-15.1.0.185-linux.run",
-        "modelsim": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/ModelSimSetup-15.1.0.185-linux.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/arria-15.1.0.185.qdz",
-        "a10_part1": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/arria10_part1-15.1.0.185.qdz",
-        "a10_part2": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/arria10_part2-15.1.0.185.qdz",
-        "a10_part3": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/arria10_part3-15.1.0.185.qdz",
-        "a5": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/arriav-15.1.0.185.qdz",
-        "a5gz": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/arriavgz-15.1.0.185.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/cyclone-15.1.0.185.qdz",
-        "s4": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/stratixiv-15.1.0.185.qdz",
-        "s5": "https://download.altera.com/akdlm/software/acdsinst/15.1/185/ib_installers/stratixv-15.1.0.185.qdz",
-    }
-
-    quartus_url_150web = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/15.0/145/ib_installers/QuartusSetupWeb-15.0.0.145-linux.run",
-        "modelsim": "https://download.altera.com/akdlm/software/acdsinst/15.0/145/ib_installers/ModelSimSetup-15.0.0.145-linux.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/15.0/145/ib_installers/arria-15.0.0.145.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/15.0/145/ib_installers/cyclone-15.0.0.145.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/15.0/145/ib_installers/cyclonev-15.0.0.145.qdz",
-        "m2": "https://download.altera.com/akdlm/software/acdsinst/15.0/145/ib_installers/max-15.0.0.145.qdz",
-        "m10": "https://download.altera.com/akdlm/software/acdsinst/15.0/145/ib_installers/max10-15.0.0.145.qdz",
-    }
-
-    quartus_url_141web = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/14.1/186/ib_installers/QuartusSetupWeb-14.1.0.186-linux.run",
-        "modelsim": "https://download.altera.com/akdlm/software/acdsinst/14.1/186/ib_installers/ModelSimSetup-14.1.0.186-linux.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/14.1/186/ib_installers/arria-14.1.0.186.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/14.1/186/ib_installers/cyclone-14.1.0.186.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/14.1/186/ib_installers/cyclonev-14.1.0.186.qdz",
-        "m2": "https://download.altera.com/akdlm/software/acdsinst/14.1/186/ib_installers/max-14.1.0.186.qdz",
-        "m10": "https://download.altera.com/akdlm/software/acdsinst/14.1/186/ib_installers/max10-14.1.0.186.qdz",
-    }
-
-    quartus_url_140web = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/14.0/200/ib_installers/QuartusSetupWeb-14.0.0.200-linux.run",
-        "modelsim": "https://download.altera.com/akdlm/software/acdsinst/14.0/200/ib_installers/ModelSimSetup-14.0.0.200-linux.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/14.0/200/ib_installers/arria-14.0.0.200.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/14.0/200/ib_installers/cyclone-14.0.0.200.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/14.0/200/ib_installers/cyclonev-14.0.0.200.qdz",
-        "m2": "https://download.altera.com/akdlm/software/acdsinst/14.0/200/ib_installers/max-14.0.0.200.qdz",
-    }
-
-    quartus_url_131web = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/13.1/162/ib_installers/QuartusSetupWeb-13.1.0.162.run",
-        "modelsim": "https://download.altera.com/akdlm/software/acdsinst/13.1/162/ib_installers/ModelSimSetup-13.1.0.162.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/13.1/162/ib_installers/arria-13.1.0.162.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/13.1/162/ib_installers/cyclone-13.1.0.162.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/13.1/162/ib_installers/cyclonev-13.1.0.162.qdz",
-        "m2": "https://download.altera.com/akdlm/software/acdsinst/13.1/162/ib_installers/max-13.1.0.162.qdz",
-    }
-
-    quartus_url_130sp1web = {
-        "setup": "https://download.altera.com/akdlm/software/acdsinst/13.0sp1/232/ib_installers/QuartusSetupWeb-13.0.1.232.run",
-        "modelsim": "https://download.altera.com/akdlm/software/acdsinst/13.0sp1/232/ib_installers/ModelSimSetup-13.0.1.232.run",
-        "a2": "https://download.altera.com/akdlm/software/acdsinst/13.0sp1/232/ib_installers/arria-13.0.1.232.qdz",
-        "c4": "https://download.altera.com/akdlm/software/acdsinst/13.0sp1/232/ib_installers/cyclone-13.0.1.232.qdz",
-        "c5": "https://download.altera.com/akdlm/software/acdsinst/13.0sp1/232/ib_installers/cyclonev-13.0.1.232.qdz",
-        "m2": "https://download.altera.com/akdlm/software/acdsinst/13.0sp1/232/ib_installers/max-13.0.1.232.qdz",
-    }
-
-    # Order here is the user-visible --list-versions order; keep it stable.
-    return {
-        "13.0sp1web": quartus_url_130sp1web,
-        "13.1web": quartus_url_131web,
-        "14.0web": quartus_url_140web,
-        "14.1web": quartus_url_141web,
-        "15.0web": quartus_url_150web,
-        "15.1std": quartus_url_151std,
-        "16.0std": quartus_url_160std,
-        "16.1std": quartus_url_161std,
-        "16.1lite": quartus_url_161lite,
-        "17.0pro": quartus_url_170pro,
-        "17.0std": quartus_url_170std,
-        "17.1pro": quartus_url_171pro,
-        "17.1std": quartus_url_171std,
-        "17.1lite": quartus_url_171lite,
-        "18.0pro": quartus_url_180pro,
-        "18.0std": quartus_url_180std,
-        "18.0lite": quartus_url_180lite,
-        "18.1pro": quartus_url_181pro,
-        "18.1std": quartus_url_181std,
-        "18.1lite": quartus_url_181lite,
-        "19.1std": quartus_url_191std,
-        "19.1lite": quartus_url_191lite,
-        "19.1pro": quartus_url_191pro,
-        "19.2pro": quartus_url_192pro,
-        "19.3pro": quartus_url_193pro,
-        "19.4pro": quartus_url_194pro,
-        "20.1std": quartus_url_201std,
-        "20.1.1std": quartus_url_2011std,
-        "20.1lite": quartus_url_201lite,
-        "20.1.1lite": quartus_url_2011lite,
-        "21.1std": quartus_url_211std,
-        "21.1lite": quartus_url_211lite,
-        "22.1std": quartus_url_221std,
-        "22.1lite": quartus_url_221lite,
-        "23.1std": quartus_url_231std,
-        "23.1lite": quartus_url_231lite,
-        "24.1std": quartus_url_241std,
-        "24.1lite": quartus_url_241lite,
-        "25.1std": quartus_url_251std,
-        "25.1lite": quartus_url_251lite,
-        "20.1pro": quartus_url_201pro,
-        "20.2pro": quartus_url_202pro,
-        "20.3pro": quartus_url_203pro,
-        "20.4pro": quartus_url_204pro,
-        "21.1pro": quartus_url_211pro,
-        "21.2pro": quartus_url_212pro,
-        "21.3pro": quartus_url_213pro,
-        "21.4pro": quartus_url_214pro,
-        "22.1pro": quartus_url_221pro,
-        "22.2pro": quartus_url_222pro,
-        "22.3pro": quartus_url_223pro,
-        "22.4pro": quartus_url_224pro,
-        "23.1pro": quartus_url_231pro,
-        "23.2pro": quartus_url_232pro,
-        "23.3pro": quartus_url_233pro,
-        "23.4pro": quartus_url_234pro,
-        "24.1pro": quartus_url_241pro,
-        "24.2pro": quartus_url_242pro,
-        "24.3pro": quartus_url_243pro,
-        "25.1pro": quartus_url_251pro,
-    }
+    return {key: resolve(key) for key in raw}
 
 
 VERSIONS: UrlDB = build_versions()
