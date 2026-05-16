@@ -6,12 +6,21 @@ across a number of servers, and to run as part of a scripted build.
 
 Syntax:
 ```
-usage: quartus-install.py [-h] [--download-only] [--install-only] [--prune]
-                          version target device [device ...]
+usage: quartus-install.py [-h] [--list-versions] [--list-parts]
+                          [--download-only] [--install-only] [--print-urls]
+                          [--prune] [--nosetup] [--parallel PARALLEL]
+                          [--fix-libpng] [--fix-libncurses] [--foreign]
+                          [--check-urls]
+                          [version] [target] [device ...]
 
 Download and install Quartus.
 
-positional arguments (required):
+The positional arguments are optional: the informational flags
+(--list-versions, --list-parts VERSION, --check-urls, --print-urls VERSION
+DEVICE...) work on their own with no dummy arguments.  version/target/device
+are required only for the download/install workflow.
+
+positional arguments:
   version          Quartus version, eg 18.0pro, 17.1lite, 16.1std.
                    Supplying an invalid version will return the supported versions.
   target           Directory to install Quartus in
@@ -37,15 +46,18 @@ positional arguments (required):
 optional arguments:
   -h, --help       show this help message and exit
   --list-versions  Print the Quartus versions supported
-  --list-parts     Print the devices and other pieces we can download
+  --list-parts     Print the devices and other pieces for a version
+                   (needs a version, eg --list-parts 17.1std)
   --download-only  Only download, don't install
   --install-only   Only install, don't download
+  --print-urls     Print the URLs that would be downloaded and exit
   --prune          Delete install files when finished
   --nosetup        Don't download Quartus setup frontend
   --parallel PARALLEL, -j PARALLEL
                    Number of parallel download connections
   --fix-libpng     Build and add libpng12.so binary to Quartus library dir
                    (needed for recent Ubuntu among others)
+  --fix-libncurses Build and add libncurses5.so binary to Quartus library dir
   --check-urls     Check whether the URLs in the database are fetchable
   --foreign        EXPERIMENTAL support for emulating Quartus on aarch64
                    Ubuntu LTS (eg Apple M1 via UTM).  Requires sudo, see
