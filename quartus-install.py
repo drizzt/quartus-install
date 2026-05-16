@@ -195,7 +195,8 @@ quartus_url_181pro = {
     'modelsim_part2' : 'https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/modelsim-part2-18.1.0.222-linux.qdz',
     'a10' : 'https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/arria10-18.1.0.222.qdz',
     'c10gx' : 'https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/cyclone10gx-18.1.0.222.qdz',
-    's10' : 'https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/stratix10-18.1.0.222.qdz'
+    's10' : 'https://download.altera.com/akdlm/software/acdsinst/18.1/222/ib_installers/stratix10-18.1.0.222.qdz',
+    'update_1' : "https://download.altera.com/akdlm/software/acdsinst/18.1.1/263/update/QuartusProSetup-18.1.1.263-linux.run"
 }
 
 quartus_url_181std = {
@@ -328,7 +329,8 @@ quartus_url_161std = {
     'm2' : "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/max-16.1.0.196.qdz",
     'm10' : "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/max10-16.1.0.196.qdz",
     's4' : "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/stratixiv-16.1.0.196.qdz",
-    's5' : "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/stratixv-16.1.0.196.qdz"
+    's5' : "https://download.altera.com/akdlm/software/acdsinst/16.1/196/ib_installers/stratixv-16.1.0.196.qdz",
+    'update_1' : "https://download.altera.com/akdlm/software/acdsinst/16.1.1/200/update/QuartusSetup-16.1.1.200-linux.run"
 
 }
 
