@@ -51,6 +51,13 @@ import urllib.request
 
 UrlDB = dict[str, dict[str, str]]
 
+# Canonical download host.  Altera now owns the FPGA tools; this host
+# 301-redirects to the Intel-operated Akamai CDN and serves the file on a
+# GET that follows redirects (HEAD shows a bogus 404-redirector, but
+# urllib/aria2 use GET).  The whole URL database uses this host - never
+# downloads.intel.com - so the redirect target can move without edits here.
+BASE_URL = "https://download.altera.com/akdlm/software/acdsinst"
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PARALLEL = 16
 
@@ -90,9 +97,8 @@ def version_tuple(text: str) -> tuple[int, ...]:
 
 def generate_pro_url(quartus_version: str, minor_version: str,
                       revision: str) -> dict[str, str]:
-    base_url = "https://download.altera.com/akdlm/software/acdsinst"
     full_version = f"{quartus_version}.{minor_version}.{revision.split('.')[0]}"
-    version_url = f"{base_url}/{quartus_version}/{revision}/ib_installers"
+    version_url = f"{BASE_URL}/{quartus_version}/{revision}/ib_installers"
     qv = version_tuple(quartus_version)
     pro_urls: dict[str, str] = {}
     pro_urls["setup"] = f"{version_url}/QuartusProSetup-{full_version}-linux.run"
@@ -146,6 +152,11 @@ def generate_pro_url(quartus_version: str, minor_version: str,
     if qv >= (23, 3):
         pro_urls.pop("questa_part2", None)
         pro_urls.pop("questawindows_part2", None)
+    if qv >= (24, 1):
+        pro_urls["agilex5"] = f"{version_url}/agilex5-{full_version}.qdz"
+        pro_urls["agilex_common"] = f"{version_url}/agilex_common-{full_version}.qdz"
+    if qv >= (25, 1):
+        pro_urls["agilex3"] = f"{version_url}/agilex3-{full_version}.qdz"
     pro_urls["a10"] = f"{version_url}/arria10-{full_version}.qdz"
     pro_urls["c10gx"] = f"{version_url}/cyclone10gx-{full_version}.qdz"
     pro_urls["s10"] = f"{version_url}/stratix10-{full_version}.qdz"
@@ -153,22 +164,50 @@ def generate_pro_url(quartus_version: str, minor_version: str,
 
 
 def generate_std_url(quartus_version: str, minor_version: str,
-                     revision: str, edition: str) -> dict[str, str]:
-    base_url = "https://download.altera.com/akdlm/software/acdsinst"
-    version_url = f"{base_url}/{quartus_version}{edition}/{revision}/ib_installers"
-    full_version = f"{quartus_version}.{minor_version}.{revision}"
+                     revision: str, edition: str, *,
+                     sim: str = "modelsim", embed_edition: bool = False,
+                     arria10_single: bool = False) -> dict[str, str]:
+    """Build the Standard/Lite {part: url} map.
+
+    Three things shift across releases (verified against the CDN):
+      - embed_edition: from 22.1std the edition is also baked into the
+        filename, eg QuartusSetup-22.1std.0.915-linux.run (older: 21.1.0.842).
+      - sim: ModelSim was renamed to Questa from 21.1 (dict key stays
+        'modelsim' so the install logic and CLI are unchanged).
+      - arria10_single: from 23.1std Arria 10 ships as one arria10-*.qdz
+        instead of the older arria10_part1/2/3 split.
+    """
+    version_url = f"{BASE_URL}/{quartus_version}{edition}/{revision}/ib_installers"
+    edition_tag = edition.split(".")[0]
+    if embed_edition:
+        full_version = f"{quartus_version}{edition_tag}.{minor_version}.{revision}"
+    else:
+        full_version = f"{quartus_version}.{minor_version}.{revision}"
+    sim_leaf = "QuestaSetup" if sim == "questa" else "ModelSimSetup"
     urls: dict[str, str] = {}
     urls["setup"] = f"{version_url}/QuartusSetup-{full_version}-linux.run"
-    urls["modelsim"] = f"{version_url}/ModelSimSetup-{full_version}-linux.run"
-    for part in (1, 2, 3):
-        urls[f"a10_part{part}"] = f"{version_url}/arria10_part{part}-{full_version}.qdz"
-    # arria 10 ships as the a10_part* qdz files above, so skip the plain
-    # 'a10' device here.
+    urls["modelsim"] = f"{version_url}/{sim_leaf}-{full_version}-linux.run"
+    if arria10_single:
+        urls["a10"] = f"{version_url}/arria10-{full_version}.qdz"
+    else:
+        for part in (1, 2, 3):
+            urls[f"a10_part{part}"] = f"{version_url}/arria10_part{part}-{full_version}.qdz"
+    # a10 handled above; skip it in the generic family loop.
     for fpga, family in FPGA_KEY.items():
         if fpga == "a10":
             continue
         urls[fpga] = f"{version_url}/{family}-{full_version}.qdz"
     return urls
+
+
+def lite_from_std(std: dict[str, str]) -> dict[str, str]:
+    """Lite shares Std device files; only the installer and the Arria II
+    leaf differ (QuartusLiteSetup, arria_lite-*.qdz)."""
+    lite = dict(std)
+    lite["setup"] = std["setup"].replace("/QuartusSetup-", "/QuartusLiteSetup-")
+    if "a2" in std:
+        lite["a2"] = std["a2"].replace("/arria-", "/arria_lite-")
+    return lite
 
 
 def build_versions() -> UrlDB:
@@ -193,6 +232,10 @@ def build_versions() -> UrlDB:
     quartus_url_194pro = generate_pro_url("19.4", "0", "64")
     quartus_url_193pro = generate_pro_url("19.3", "0", "222")
     quartus_url_192pro = generate_pro_url("19.2", "0", "57")
+    quartus_url_251pro = generate_pro_url("25.1", "0", "129")
+    quartus_url_243pro = generate_pro_url("24.3", "0", "212")
+    quartus_url_242pro = generate_pro_url("24.2", "0", "40")
+    quartus_url_241pro = generate_pro_url("24.1", "0", "115")
 
     quartus_url_2011std = generate_std_url("20.1", "1", "720", "std.1")
     quartus_url_201std = generate_std_url("20.1", "0", "711", "std")
@@ -206,12 +249,27 @@ def build_versions() -> UrlDB:
         "ib_installers/QuartusSetup-20.1.1.720-linux.run"
     )
 
-    # Newer versions of Quartus Lite
-    quartus_url_251lite = {
-        "setup": "https://downloads.intel.com/akdlm/software/acdsinst/25.1std/1129/ib_installers/QuartusLiteSetup-25.1std.0.1129-linux.run",
-        "modelsim": "https://downloads.intel.com/akdlm/software/acdsinst/25.1std/1129/ib_installers/QuestaSetup-25.1std.0.1129-linux.run",
-        "c5": "https://downloads.intel.com/akdlm/software/acdsinst/25.1std/1129/ib_installers/cyclonev-25.1std.0.1129.qdz",
-    }
+    # Modern Standard/Lite releases.  21.1 still uses the old (no edition in
+    # filename) layout with arria10_part1/2/3; 22.1 bakes the edition into
+    # the filename; from 23.1 Arria 10 is a single qdz.  All use Questa.
+    quartus_url_211std = generate_std_url("21.1", "0", "842", "std",
+                                          sim="questa")
+    quartus_url_221std = generate_std_url("22.1", "0", "915", "std",
+                                          sim="questa", embed_edition=True)
+    quartus_url_231std = generate_std_url("23.1", "0", "991", "std",
+                                          sim="questa", embed_edition=True,
+                                          arria10_single=True)
+    quartus_url_241std = generate_std_url("24.1", "0", "1077", "std",
+                                          sim="questa", embed_edition=True,
+                                          arria10_single=True)
+    quartus_url_251std = generate_std_url("25.1", "0", "1129", "std",
+                                          sim="questa", embed_edition=True,
+                                          arria10_single=True)
+    quartus_url_211lite = lite_from_std(quartus_url_211std)
+    quartus_url_221lite = lite_from_std(quartus_url_221std)
+    quartus_url_231lite = lite_from_std(quartus_url_231std)
+    quartus_url_241lite = lite_from_std(quartus_url_241std)
+    quartus_url_251lite = lite_from_std(quartus_url_251std)
 
     # Lite has a different installer but the same device files
     quartus_url_2011lite = dict(quartus_url_2011std)
@@ -489,6 +547,15 @@ def build_versions() -> UrlDB:
         "20.1.1std": quartus_url_2011std,
         "20.1lite": quartus_url_201lite,
         "20.1.1lite": quartus_url_2011lite,
+        "21.1std": quartus_url_211std,
+        "21.1lite": quartus_url_211lite,
+        "22.1std": quartus_url_221std,
+        "22.1lite": quartus_url_221lite,
+        "23.1std": quartus_url_231std,
+        "23.1lite": quartus_url_231lite,
+        "24.1std": quartus_url_241std,
+        "24.1lite": quartus_url_241lite,
+        "25.1std": quartus_url_251std,
         "25.1lite": quartus_url_251lite,
         "20.1pro": quartus_url_201pro,
         "20.2pro": quartus_url_202pro,
@@ -506,6 +573,10 @@ def build_versions() -> UrlDB:
         "23.2pro": quartus_url_232pro,
         "23.3pro": quartus_url_233pro,
         "23.4pro": quartus_url_234pro,
+        "24.1pro": quartus_url_241pro,
+        "24.2pro": quartus_url_242pro,
+        "24.3pro": quartus_url_243pro,
+        "25.1pro": quartus_url_251pro,
     }
 
 
@@ -523,7 +594,10 @@ def match_wanted_parts(version: str, devices: list[str]) -> list[str]:
     wanted_parts = []
     for part in parts:
         prefix = part.split("_", 1)[0]
-        if prefix in devices or prefix in SPECIAL_PREFIXES or part == "setup_part2":
+        # agilex_common is the shared Agilex device DB every agilexN part
+        # needs; pull it whenever present, like setup_part2.
+        if (prefix in devices or prefix in SPECIAL_PREFIXES
+                or part in ("setup_part2", "agilex_common")):
             wanted_parts.append(part)
     return wanted_parts
 

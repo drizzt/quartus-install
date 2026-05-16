@@ -39,6 +39,10 @@ positional arguments:
                            s4    Stratix IV
                            s5    Stratix V
                            s10   Stratix 10
+                           agilex7  Agilex 7 (Pro)
+                           agilex5  Agilex 5 (Pro 24.1+)
+                           agilex3  Agilex 3 (Pro 25.1+)
+                           easicn5x eASIC N5X (Pro 22.4+)
                            dsp   DSP Builder
                            eds   ARM EDS
                            opencl OpenCL toolkit
@@ -79,8 +83,11 @@ Please note that installing Quartus implies acceptance of [Intel FPGA's
 EULA](http://fpgasoftware.intel.com/eula/) for the appropriate version(s)
 you download.
 
-Since it's necessary to extract the URLs manaully from the Intel website,
-only a limited set of Quartus versions are supported.  Patches/PRs welcome!
+Since it's necessary to extract the URLs manually from the Altera website
+(which has no API and hides the direct CDN links behind per-file
+license-agreement redirects), the supported versions are a hand-curated
+list.  Run `--check-urls` to verify the database is still fetchable.
+Patches/PRs welcome!
 
 Theo Markettos
 
