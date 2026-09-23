@@ -63,6 +63,17 @@ UrlDB = dict[str, dict[str, str]]
 # downloads.intel.com - so the redirect target can move without edits here.
 BASE_URL = "https://download.altera.com/akdlm/software/acdsinst"
 
+# The Akamai CDN answers 403 to requests that don't look like a browser. It
+# needs a browser User-Agent plus Accept-Encoding plus Accept; any two of the
+# three are still refused. Installers come back without Content-Encoding, so
+# advertising compression doesn't change the downloaded bytes.
+BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64; rv:156.0) "
+                   "Gecko/20100101 Firefox/156.0"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+}
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PARALLEL = 16
 
@@ -341,6 +352,7 @@ def download_quartus(version: str, parts: list[str],
         command = ["aria2c", "--continue", "--file-allocation=none",
                    "--download-result=full", "--summary=300", parallel,
                    "--input-file", urllistfile]
+        command += [f"--header={k}: {v}" for k, v in BROWSER_HEADERS.items()]
         process = subprocess.Popen(command, bufsize=1)
         try:
             process.wait()
@@ -471,7 +483,8 @@ def test_url(quartus: str, part: str, url: str, print_url: bool) -> bool:
     try:
         # KeyboardInterrupt is a BaseException, so Ctrl-C still propagates;
         # any reachability failure (URL/HTTP/OS error) just means "missing".
-        with urllib.request.urlopen(url):
+        req = urllib.request.Request(url, headers=BROWSER_HEADERS)
+        with urllib.request.urlopen(req):
             return True
     except Exception:
         return False
